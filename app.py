@@ -6,7 +6,7 @@ import io
 
 DB_NAME = "newmoneysync.db"
 
-# --- DATABASE INITIALIZATION ---
+# --- DATABASE INITIALIZATION & AUTO-MIGRATION ---
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -30,6 +30,19 @@ def init_db():
         )
     ''')
     
+    # Check and add missing columns dynamically if an older database file exists
+    cursor.execute("PRAGMA table_info(users)")
+    existing_columns = [col[1] for col in cursor.fetchall()]
+    
+    if "onboarding_complete" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN onboarding_complete INTEGER DEFAULT 0")
+    if "primary_intent" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN primary_intent TEXT")
+    if "coop_split_rate" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN coop_split_rate REAL DEFAULT 5.0")
+    if "tax_bracket_rate" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN tax_bracket_rate REAL DEFAULT 7.5")
+
     # Invoices Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS invoices (
@@ -231,7 +244,7 @@ def log_event_ui(user_id, event_name):
     )
 
 # --- SEED A DEFAULT TEST USER IF NONE EXISTS ---
-users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate, onboarding_count FROM users")
+users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate, onboarding_complete FROM users")
 if not users:
     signup_date = datetime.now().isoformat()
     cohort_week = datetime.now().strftime("%Y-W%V")
@@ -245,7 +258,7 @@ if not users:
 
 active_user_id = users[0][0]
 active_username = users[0][1]
-onboarding_status = users[0][5]
+onboarding_status = users[0][5] if len(users[0]) > 5 and users[0][5] is not None else 0
 
 # ==========================================
 # ONBOARDING WIZARD SCREEN (IF NOT COMPLETE)
@@ -523,9 +536,9 @@ else:
         user_info = run_query("SELECT entity_type, annual_turnover, tax_bracket_rate, coop_split_rate FROM users WHERE user_id = ?", (active_user_id,))[0]
         
         with st.form("settings_form"):
-            entity_type = st.selectbox("Entity Classification", ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"], index=["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"].index(user_info[0]))
-            annual_turnover = st.number_input("Estimated Annual Revenue ($)", min_value=0.0, value=user_info[1])
-            coop_split_rate = st.slider("Cooperative Pool Allocation (%)", min_value=0.0, max_value=25.0, value=user_info[3], step=0.5)
+            entity_type = st.selectbox("Entity Classification", ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"], index=["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"].index(user_info[0]) if user_info[0] in ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"] else 0)
+            annual_turnover = st.number_input("Estimated Annual Revenue ($)", min_value=0.0, value=user_info[1] if user_info[1] else 15000.0)
+            coop_split_rate = st.slider("Cooperative Pool Allocation (%)", min_value=0.0, max_value=25.0, value=user_info[3] if user_info[3] else 5.0, step=0.5)
             
             if st.form_submit_button("Save Automation Rules"):
                 calculated_tax = 0.0 if entity_type == "Small Business (< ₦100M Turnover)" and annual_turnover <= 65000 else 7.5

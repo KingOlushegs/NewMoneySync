@@ -6,6 +6,110 @@ import io
 
 DB_NAME = "newmoneysync.db"
 
+# --- DATABASE INITIALIZATION ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # Core Users Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            email TEXT,
+            tier TEXT,
+            entity_type TEXT,
+            annual_turnover REAL,
+            tax_bracket_rate REAL,
+            coop_split_rate REAL,
+            traffic_source TEXT,
+            signup_date TEXT,
+            cohort_week TEXT
+        )
+    ''')
+    
+    # Invoices Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS invoices (
+            invoice_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            client_name TEXT,
+            amount REAL,
+            asset_type TEXT,
+            status TEXT,
+            payment_tx_hash TEXT,
+            created_at TEXT
+        )
+    ''')
+
+    # Telemetry Events Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS telemetry_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_name TEXT,
+            timestamp TEXT,
+            cohort_week TEXT
+        )
+    ''')
+
+    # Cooperative Members Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cooperative_members (
+            member_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            member_name TEXT,
+            email TEXT,
+            department TEXT,
+            monthly_contrib REAL,
+            joined_at TEXT
+        )
+    ''')
+
+    # Cooperative Ledger Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cooperative_ledger (
+            ledger_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
+            member_id INTEGER,
+            amount REAL,
+            reference TEXT,
+            timestamp TEXT,
+            status TEXT
+        )
+    ''')
+
+    # Payroll Directory Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payroll_directory (
+            employee_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            full_name TEXT,
+            role TEXT,
+            payout_rail TEXT,
+            salary_amount REAL,
+            created_at TEXT
+        )
+    ''')
+
+    # Payroll History & Accounting Log Table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payroll_history (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            run_date TEXT,
+            recipient_count INTEGER,
+            total_amount REAL,
+            currency_summary TEXT,
+            status TEXT
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="NewMoneySync | Intelligent B2B & Cooperative Ledger",
@@ -27,7 +131,6 @@ st.markdown("""
         100% { background-position: 100% bottom; }
     }
 
-    /* Main background strictly using deep and vibrant sky blue/azure variations */
     .stApp {
         background: linear-gradient(135deg, #BAE6FD, #38BDF8, #0EA5E9, #0284C7);
         background-size: 300% 300%;
@@ -36,7 +139,6 @@ st.markdown("""
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
-    /* Sidebar matching deep sky-blue variations with panning silhouette */
     [data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child {
         background: 
             linear-gradient(180deg, #7DD3FC 0%, #38BDF8 50%, #0284C7 100%),
@@ -48,7 +150,6 @@ st.markdown("""
         border-right: 1px solid rgba(255, 255, 255, 0.4);
     }
     
-    /* High-contrast text styling for complete readability */
     [data-testid="stSidebar"] *, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] div {
         color: #0F172A !important;
         font-weight: 600;
@@ -59,7 +160,6 @@ st.markdown("""
         font-weight: 700;
     }
 
-    /* Floating white glassmorphism cards */
     div[data-testid="stMetric"] {
         background: rgba(255, 255, 255, 0.95);
         backdrop-filter: blur(12px);
@@ -78,7 +178,6 @@ st.markdown("""
         font-weight: 800;
     }
 
-    /* Buttons */
     .stButton button {
         background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%);
         color: white;
@@ -109,27 +208,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- DATABASE UTILITIES ---
-def process_esusu_contribution_batch(group_id: str, contributions: list):
-    """
-    Processes a batch of member contributions for cooperative Esusu/thrift pools.
-    contributions: List of tuples -> (member_id, amount_paid, payment_reference)
-    """
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    timestamp = datetime.now().isoformat()
-    
-    for member_id, amount_paid, payment_ref in contributions:
-        cursor.execute(
-            """INSERT INTO cooperative_ledger (group_id, member_id, amount, reference, timestamp, status)
-               VALUES (?, ?, ?, ?, ?, 'verified')""",
-            (group_id, member_id, amount_paid, payment_ref, timestamp)
-        )
-        
-    conn.commit()
-    conn.close()
-    return f"Successfully recorded {len(contributions)} contributions for group {group_id}."
-
 def run_query(query, params=(), fetch=True):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -150,6 +228,22 @@ def log_event_ui(user_id, event_name):
         fetch=False
     )
 
+# --- SEED A DEFAULT TEST USER IF NONE EXISTS ---
+users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate FROM users")
+if not users:
+    signup_date = datetime.now().isoformat()
+    cohort_week = datetime.now().strftime("%Y-W%V")
+    run_query(
+        """INSERT INTO users (username, email, tier, entity_type, annual_turnover, tax_bracket_rate, coop_split_rate, traffic_source, signup_date, cohort_week) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("Olu-Shegs", "olu@newmoneysync.com", "paid", "Freelancer", 12000.0, 7.5, 5.0, "utm_google", signup_date, cohort_week),
+        fetch=False
+    )
+    users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate FROM users")
+
+active_user_id = users[0][0]
+active_username = users[0][1]
+
 # --- SIDEBAR NAVIGATION ---
 st.sidebar.title("NewMoneySync 💸")
 st.sidebar.caption("Autonomous Settlement & Compliance")
@@ -160,28 +254,13 @@ menu = st.sidebar.radio(
         "Dashboard & Telemetry", 
         "Invoicing & Stablecoin Settlement", 
         "Webhook Simulation (Auto-Pay)",
+        "Payroll & Dispersals",
         "User Settings & Automation Rules",
         "Cooperative Ledger (GRP-01)",
         "Tax & Compliance Engine",
         "CBN Intervention Matchmaker (GOV-01)"
     ]
 )
-
-# --- SEED A DEFAULT TEST USER IF NONE EXISTS ---
-users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate FROM users")
-if not users:
-    signup_date = datetime.now().isoformat()
-    cohort_week = datetime.now().strftime("%Y-W%V")
-    run_query(
-        """INSERT INTO users (username, email, tier, entity_type, annual_turnover, tax_bracket_rate, coop_split_rate, traffic_source, signup_date, cohort_week) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("Olu-Shegs", "olu@newmoneysync.com", "paid", "Freelancer", 12000.0, 7.5, 5.0, "utm_google", signup_date, cohort_week),
-        fetch=False
-    )
-    users = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate FROM users")
-
-active_user_id = users[0][0]
-active_username = users[0][1]
 
 st.sidebar.markdown(f"**Active User:** {active_username} (ID: {active_user_id})")
 
@@ -192,7 +271,6 @@ if menu == "Dashboard & Telemetry":
     st.title("📊 NewMoneySync Telemetry & Metrics Dashboard")
     st.markdown("Real-time automated tracking across your core MVP metrics.")
 
-    # --- LIVE STABLECOIN & ASSET BADGES ---
     col_t1, col_t2, col_t3 = st.columns(3)
     with col_t1:
         st.markdown("🟢 **USDC Gateway:** `Active ($1.00 Peg)`")
@@ -207,7 +285,6 @@ if menu == "Dashboard & Telemetry":
     df_events = pd.read_sql("SELECT * FROM telemetry_events", sqlite3.connect(DB_NAME))
     df_invoices = pd.read_sql("SELECT * FROM invoices", sqlite3.connect(DB_NAME))
 
-    # --- CORE METRIC CARDS ---
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Registered Users", len(df_users))
@@ -222,7 +299,6 @@ if menu == "Dashboard & Telemetry":
 
     st.markdown("---")
     
-    # --- DETAILED DATA TABS ---
     tab1, tab2, tab3 = st.tabs(["Traffic & Cohorts", "Measurable Actions Log", "Retention & Conversion Data"])
     with tab1:
         if not df_users.empty:
@@ -241,13 +317,12 @@ if menu == "Dashboard & Telemetry":
             st.info("No invoice records available.")
 
 # ==========================================
-# 2. INVOICING & MULTI-ASSET SETTLEMENT (FIAT, STABLECOINS, CRYPTO)
+# 2. INVOICING & MULTI-ASSET SETTLEMENT
 # ==========================================
 elif menu == "Invoicing & Stablecoin Settlement":
     st.title("⚡ Multi-Asset Invoicing & Settlement Engine")
     st.markdown("Create digital invoices bridging **Real Cash (Fiat)**, **Stablecoins (USDC/USDT)**, and **Decentralized Cryptocurrencies**.")
 
-    # --- LIVE RAIL STATUS BADGES ---
     col_rail1, col_rail2, col_rail3 = st.columns(3)
     with col_rail1:
         st.markdown("💵 **Fiat Cash Rail:** `Active (ACH/NIBSS)`")
@@ -262,7 +337,6 @@ elif menu == "Invoicing & Stablecoin Settlement":
         client_name = st.text_input("Client Name / Organization")
         amount = st.number_input("Invoice Amount ($)", min_value=1.0, value=1500.0)
         
-        # Expanded Asset Class Selection matching NewMoneySync multi-asset spec
         asset_category = st.selectbox(
             "Select Payment & Settlement Rail", 
             [
@@ -325,7 +399,83 @@ elif menu == "Webhook Simulation (Auto-Pay)":
         st.info("No pending invoices found.")
 
 # ==========================================
-# 4. USER SETTINGS & AUTOMATION RULES
+# 4. PAYROLL & DISPERSALS MODULE
+# ==========================================
+elif menu == "Payroll & Dispersals":
+    st.title("🏢 Multi-Asset Payroll & Dispersals Engine")
+    st.markdown("Manage global team compensation across fiat and stablecoin rails with automated ledger posting.")
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.subheader("Team Directory")
+        employees = run_query("SELECT employee_id, full_name, role, payout_rail, salary_amount FROM payroll_directory WHERE user_id = ?", (active_user_id,))
+        if employees:
+            df_emp = pd.DataFrame(employees, columns=["ID", "Full Name", "Role", "Rail", "Monthly Salary ($)"])
+            st.dataframe(df_emp, use_container_width=True)
+        else:
+            st.info("No employees or contractors added to the payroll directory yet.")
+
+        with st.form("add_employee_form"):
+            st.markdown("**Add New Recipient**")
+            emp_name = st.text_input("Full Name")
+            emp_role = st.text_input("Role / Title")
+            emp_rail = st.selectbox("Preferred Payout Rail", ["USDC", "USDT", "NGN Fiat", "USD Fiat"])
+            emp_salary = st.number_input("Monthly Compensation Amount", min_value=0.0, step=100.0)
+            
+            submitted = st.form_submit_button("Add to Directory")
+            if submitted and emp_name:
+                joined = datetime.now().isoformat()
+                run_query(
+                    "INSERT INTO payroll_directory (user_id, full_name, role, payout_rail, salary_amount, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (active_user_id, emp_name, emp_role, emp_rail, emp_salary, joined),
+                    fetch=False
+                )
+                log_event_ui(active_user_id, "payroll_employee_added")
+                st.success(f"Added {emp_name} successfully!")
+                st.rerun()
+            elif submitted:
+                st.warning("Please enter a recipient name.")
+
+    with col2:
+        st.subheader("Execute Payroll Run")
+        st.markdown("Disburse active monthly salaries across selected rails.")
+        
+        all_emp = run_query("SELECT payout_rail, salary_amount FROM payroll_directory WHERE user_id = ?", (active_user_id,))
+        total_payroll_usd = sum([e[1] for e in all_emp if "USD" in e[0] or e[0] in ["USDC", "USDT"]])
+        total_payroll_ngn = sum([e[1] for e in all_emp if "NGN" in e[0]])
+        
+        st.metric(label="Pending Stablecoin/USD Run", value=f"${total_payroll_usd:,.2f}")
+        st.metric(label="Pending NGN Fiat Run", value=f"₦{total_payroll_ngn:,.2f}")
+
+        if st.button("🚀 Execute Monthly Payroll Run", type="primary"):
+            if all_emp:
+                run_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                total_combined = total_payroll_usd + (total_payroll_ngn / 1500.0) # Approx USD equiv for log
+                
+                run_query(
+                    "INSERT INTO payroll_history (user_id, run_date, recipient_count, total_amount, currency_summary, status) VALUES (?, ?, ?, ?, ?, ?)",
+                    (active_user_id, run_date, len(all_emp), total_combined, f"USD: ${total_payroll_usd:,.2f} | NGN: ₦{total_payroll_ngn:,.2f}", "Settled"),
+                    fetch=False
+                )
+                log_event_ui(active_user_id, "payroll_run_executed")
+                st.success("Payroll executed successfully! Double-entry ledger updated automatically.")
+                st.balloons()
+                st.rerun()
+            else:
+                st.warning("No active employees found to run payroll for.")
+
+    st.divider()
+    st.subheader("Payroll Dispersal & Ledger Logs")
+    history = run_query("SELECT run_date, recipient_count, total_amount, currency_summary, status FROM payroll_history WHERE user_id = ?", (active_user_id,))
+    if history:
+        df_hist = pd.DataFrame(history, columns=["Run Date", "Recipients", "Total Amount (USD Equiv)", "Currency Summary", "Status"])
+        st.dataframe(df_hist, use_container_width=True)
+    else:
+        st.info("No payroll runs executed yet this cycle.")
+
+# ==========================================
+# 5. USER SETTINGS & AUTOMATION RULES
 # ==========================================
 elif menu == "User Settings & Automation Rules":
     st.title("⚙️ User Settings & Custom Automation Rules")
@@ -344,7 +494,7 @@ elif menu == "User Settings & Automation Rules":
             st.rerun()
 
 # ==========================================
-# 5. COOPERATIVE LEDGER (GRP-01)
+# 6. COOPERATIVE LEDGER (GRP-01)
 # ==========================================
 elif menu == "Cooperative Ledger (GRP-01)":
     st.title("👥 Corporate Cooperative & Esusu Thrift Ledger")
@@ -421,7 +571,7 @@ elif menu == "Cooperative Ledger (GRP-01)":
         st.info("No cooperative members registered yet. Add members individually or via CSV upload above!")
 
 # ==========================================
-# 6. TAX & COMPLIANCE ENGINE
+# 7. TAX & COMPLIANCE ENGINE
 # ==========================================
 elif menu == "Tax & Compliance Engine":
     st.title("📋 Tax & Compliance Engine (TAX-01)")
@@ -444,7 +594,7 @@ elif menu == "Tax & Compliance Engine":
         st.info("No settled revenue found.")
 
 # ==========================================
-# 7. CBN INTERVENTION MATCHMAKER (GOV-01)
+# 8. CBN INTERVENTION MATCHMAKER (GOV-01)
 # ==========================================
 elif menu == "CBN Intervention Matchmaker (GOV-01)":
     st.title("🇳🇬 Government & CBN Intervention Matchmaker (GOV-01)")

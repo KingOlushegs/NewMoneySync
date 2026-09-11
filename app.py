@@ -3,8 +3,11 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import io
+import os
+from dotenv import load_dotenv
 from omnisync.services import parse_retail_input_with_gemini, transcribe_audio_with_gemini
 
+load_dotenv()
 DB_NAME = "newmoneysync.db"
 
 # --- DATABASE INITIALIZATION & AUTO-MIGRATION ---
@@ -18,7 +21,7 @@ def init_db():
             user_id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
             email TEXT,
-            phone_number TEXT,
+            phone_number TEXT UNIQUE,
             password_hash TEXT,
             role TEXT DEFAULT 'standard',
             tier TEXT,
@@ -165,6 +168,15 @@ def init_db():
             created_at TEXT
         )
     ''')
+
+    # Auto-seed Developer Account from Environment Variables
+    dev_phone = os.getenv("DEV_PHONE", "07053723614")
+    dev_pass = os.getenv("DEV_PASSWORD", "dadadatatada")
+    
+    cursor.execute("""
+        INSERT OR IGNORE INTO users (username, email, phone_number, password_hash, role, onboarding_complete)
+        VALUES ('Lead Developer', 'oolushegs@yahoo.com', ?, ?, 'developer', 1)
+    """, (dev_phone, dev_pass))
 
     conn.commit()
     conn.close()

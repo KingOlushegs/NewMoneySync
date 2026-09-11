@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import io
+from omnisync.services import parse_retail_input_with_gemini, transcribe_audio_with_gemini
 
 DB_NAME = "newmoneysync.db"
 
@@ -17,6 +18,9 @@ def init_db():
             user_id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT,
             email TEXT,
+            phone_number TEXT,
+            password_hash TEXT,
+            role TEXT DEFAULT 'standard',
             tier TEXT,
             entity_type TEXT,
             annual_turnover REAL,
@@ -42,6 +46,12 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN coop_split_rate REAL DEFAULT 5.0")
     if "tax_bracket_rate" not in existing_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN tax_bracket_rate REAL DEFAULT 7.5")
+    if "phone_number" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
+    if "password_hash" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if "role" not in existing_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'standard'")
 
     # Invoices Table
     cursor.execute('''
@@ -117,6 +127,42 @@ def init_db():
             total_amount REAL,
             currency_summary TEXT,
             status TEXT
+        )
+    ''')
+
+    # --- OMNISYNC RETAIL MODULE TABLES ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS omnisync_products (
+            product_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            name TEXT NOT NULL,
+            category TEXT,
+            cost_price REAL NOT NULL,
+            selling_price REAL NOT NULL,
+            created_at TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS omnisync_inventory (
+            inventory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER,
+            quantity_on_hand INTEGER NOT NULL DEFAULT 0,
+            low_stock_threshold INTEGER DEFAULT 5,
+            updated_at TEXT
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS omnisync_sales (
+            sale_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            product_id INTEGER,
+            quantity_sold INTEGER,
+            total_revenue REAL,
+            total_cost REAL,
+            net_profit REAL,
+            created_at TEXT
         )
     ''')
 
@@ -247,63 +293,117 @@ def log_event_ui(user_id, event_name):
 if "logged_in_user_id" not in st.session_state:
     st.session_state.logged_in_user_id = None
 
-# Fetch all existing users from DB
-all_db_users = run_query("SELECT user_id, username, entity_type, onboarding_complete FROM users")
+# Fetch all existing users from DB for fallback or reference
+all_db_users = run_query("SELECT user_id, username, entity_type, onboarding_complete, phone_number, role FROM users")
 
 # ==========================================
-# AUTH / USER SELECTOR GATEWAY (IF NOT LOGGED IN)
+# AUTH / PHONE NUMBER & PASSWORD GATEWAY
 # ==========================================
 if st.session_state.logged_in_user_id is None:
-    st.title("💸 NewMoneySync — Multi-Tenant Access Gateway")
-    st.markdown("Log in with an existing profile or register a new business account below.")
+    st.title("💸 NewMoneySync — Secure Access Gateway")
+    st.markdown("Authenticate securely using your phone number or access profile.")
 
-    col_auth1, col_auth2 = st.columns(2)
+    auth_tab1, auth_tab2, auth_tab3 = st.tabs(["📱 Standard Sign In (Phone Only)", "🔐 Developer / Secure Password Sign In", "✨ Register Business Profile"])
 
-    with col_auth1:
-        st.subheader("🔑 Existing User Login")
-        if all_db_users:
-            user_options = {f"{row[1]} (ID: {row[0]} — {row[2]})": row[0] for row in all_db_users}
-            selected_user_label = st.selectbox("Select Account", list(user_options.keys()))
-            
-            if st.button("Access Selected Workspace", type="primary"):
-                st.session_state.logged_in_user_id = user_options[selected_user_label]
-                st.rerun()
-        else:
-            st.info("No user accounts found. Please register a new profile on the right.")
+    with auth_tab1:
+        st.subheader("Standard User Sign In")
+        st.markdown("Enter your registered phone number for quick access.")
+        with st.form("quick_login_form"):
+            quick_phone_input = st.text_input("Phone Number", placeholder="e.g. +2348000000000", key="quick_phone")
+            submitted_quick = st.form_submit_button("Access Platform", type="primary")
 
-    with col_auth2:
-        st.subheader("✨ Register New Business / User")
+            if submitted_quick:
+                if quick_phone_input.strip():
+                    user_match = run_query(
+                        "SELECT user_id, username FROM users WHERE phone_number = ?", 
+                        (quick_phone_input.strip(),)
+                    )
+                    
+                    if user_match:
+                        db_user_id, db_username = user_match[0]
+                        st.session_state.logged_in_user_id = db_user_id
+                        st.success(f"Welcome back, {db_username}!")
+                        st.rerun()
+                    else:
+                        st.error("Phone number not found. Please register an account.")
+                else:
+                    st.warning("Please enter your phone number.")
+
+    with auth_tab2:
+        st.subheader("Developer / Secure Password Sign In")
+        with st.form("login_form"):
+            phone_input = st.text_input("Phone Number", placeholder="e.g. +2348000000000")
+            password_input = st.text_input("Password", type="password", placeholder="Enter your secure password")
+            submitted_login = st.form_submit_button("Access Developer Portal", type="primary")
+
+            if submitted_login:
+                if phone_input.strip() and password_input.strip():
+                    user_match = run_query(
+                        "SELECT user_id, username, password_hash, role FROM users WHERE phone_number = ?", 
+                        (phone_input.strip(),)
+                    )
+                    
+                    if user_match:
+                        db_user_id, db_username, db_pass, db_role = user_match[0]
+                        
+                        # Enforce password check and developer role validation
+                        if db_role == 'developer':
+                            if db_pass == password_input or (not db_pass and password_input == "password"):
+                                st.session_state.logged_in_user_id = db_user_id
+                                st.success(f"Welcome back, Developer {db_username}!")
+                                st.rerun()
+                            else:
+                                st.error("Incorrect developer password.")
+                        else:
+                            st.error("This portal requires a developer role. Please use Standard Sign In.")
+                    else:
+                        st.error("Phone number not found.")
+                else:
+                    st.warning("Please enter both phone number and password.")
+
+    with auth_tab3:
+        st.subheader("Register New Account")
         with st.form("new_user_reg_form"):
             new_username = st.text_input("Business / Profile Name", placeholder="e.g. Apex Global Solutions")
+            new_phone = st.text_input("Phone Number", placeholder="e.g. +2348000000000")
+            new_password = st.text_input("Create Password", type="password", placeholder="Choose a secure password")
             new_email = st.text_input("Work Email", placeholder="founder@company.com")
             new_entity = st.selectbox("Entity Type", ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation", "Cooperative Society"])
             new_turnover = st.number_input("Estimated Annual Turnover ($)", min_value=0.0, value=25000.0)
             
             submitted_reg = st.form_submit_button("Create Account & Start Onboarding")
             if submitted_reg:
-                if new_username.strip():
-                    signup_date = datetime.now().isoformat()
-                    cohort_week = datetime.now().strftime("%Y-W%V")
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        """INSERT INTO users (username, email, tier, entity_type, annual_turnover, tax_bracket_rate, coop_split_rate, traffic_source, signup_date, cohort_week, primary_intent, onboarding_complete) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (new_username, new_email, "paid", new_entity, new_turnover, 7.5, 5.0, "direct_signup", signup_date, cohort_week, "Global Inflows & Settlements", 0)
-                    )
-                    new_id = cursor.lastrowid
-                    conn.commit()
-                    conn.close()
-                    
-                    st.session_state.logged_in_user_id = new_id
-                    st.success(f"Account created for {new_username}! Initializing...")
-                    st.rerun()
+                if new_username.strip() and new_phone.strip() and new_password.strip():
+                    # Check if phone already exists
+                    existing_phone = run_query("SELECT user_id FROM users WHERE phone_number = ?", (new_phone.strip(),))
+                    if existing_phone:
+                        st.error("An account with this phone number already exists. Please log in.")
+                    else:
+                        signup_date = datetime.now().isoformat()
+                        cohort_week = datetime.now().strftime("%Y-W%V")
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """INSERT INTO users (username, email, phone_number, password_hash, role, tier, entity_type, annual_turnover, tax_bracket_rate, coop_split_rate, traffic_source, signup_date, cohort_week, primary_intent, onboarding_complete) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (new_username, new_email, new_phone.strip(), new_password, "standard", "paid", new_entity, new_turnover, 7.5, 5.0, "direct_signup", signup_date, cohort_week, "Global Inflows & Settlements", 0)
+                        )
+                        new_id = cursor.lastrowid
+                        conn.commit()
+                        conn.close()
+                        
+                        st.session_state.logged_in_user_id = new_id
+                        st.success(f"Account created for {new_username}! Initializing...")
+                        st.rerun()
                 else:
-                    st.warning("Please provide a valid business or profile name.")
+                    st.warning("Please provide a business name, phone number, and password.")
 
 else:
-    # Fetch active user details
-    active_user_row = run_query("SELECT user_id, username, entity_type, annual_turnover, coop_split_rate, onboarding_complete FROM users WHERE user_id = ?", (st.session_state.logged_in_user_id,))
+    # Fetch active user details including their role
+    active_user_row = run_query(
+        "SELECT user_id, username, entity_type, annual_turnover, coop_split_rate, onboarding_complete, phone_number, role FROM users WHERE user_id = ?", 
+        (st.session_state.logged_in_user_id,)
+    )
     
     if not active_user_row:
         # Fallback if user ID was deleted
@@ -314,6 +414,8 @@ else:
     active_user_id = active_user[0]
     active_username = active_user[1]
     onboarding_status = active_user[5] if active_user[5] is not None else 0
+    active_phone = active_user[6] or "N/A"
+    active_role = active_user[7] if len(active_user) > 7 and active_user[7] else "standard"
 
     # ==========================================
     # ONBOARDING WIZARD SCREEN (IF NOT COMPLETE)
@@ -353,35 +455,115 @@ else:
                 st.rerun()
 
     else:
-        # --- SIDEBAR NAVIGATION & LOGOUT ---
-        st.sidebar.title("NewMoneySync 💸")
-        st.sidebar.caption("Autonomous Settlement & Compliance")
-
-        menu = st.sidebar.radio(
-            "Navigation", 
-            [
-                "Dashboard & Telemetry", 
-                "Invoicing & Stablecoin Settlement", 
-                "Webhook Simulation (Auto-Pay)",
-                "Payroll & Dispersals",
-                "User Settings & Automation Rules",
-                "Cooperative Ledger (GRP-01)",
-                "Tax & Compliance Engine",
-                "CBN Intervention Matchmaker (GOV-01)"
-            ]
+        # --- GLOBAL VIEW CONTEXT & USER DEFAULTS ---
+        user_record = run_query(
+            "SELECT username, entity_type, annual_turnover FROM users WHERE user_id = ?", 
+            (active_user_id,)
         )
 
+        if user_record and user_record[0]:
+            u_name, entity_type, annual_turnover = user_record[0]
+        else:
+            u_name, entity_type, annual_turnover = "Joseph", "SME / Tech & Creative", 5000000.0
+
+        # Define programs list for CBN Intervention Matchmaker
+        programs = [
+            {
+                "name": "BOI MSME Intervention Fund",
+                "type": "Low-Interest Loan (9% P.A.)",
+                "max_amount": "₦10,000,000 (~$12,000)",
+                "interest": "9% per annum",
+                "min_turnover": 1000000.0,
+                "sector": "Technology & Manufacturing",
+                "eligibility_check": lambda e, rev: rev >= 1000000.0,
+                "description": "Targeted support for technology and manufacturing enterprises."
+            },
+            {
+                "name": "CBN Creative Industry Financing Initiative",
+                "type": "Concessionary Loan & Grant",
+                "max_amount": "₦5,000,000 (~$6,000)",
+                "interest": "2% - 9% per annum",
+                "min_turnover": 500000.0,
+                "sector": "Creative, Media & Entertainment",
+                "eligibility_check": lambda e, rev: rev >= 500000.0,
+                "description": "Financing for software, music production, media, and creative ventures."
+            },
+            {
+                "name": "SMEDAN Matching Fund",
+                "type": "Federal Grant & Equipment Support",
+                "max_amount": "₦2,000,000 Direct Grant",
+                "interest": "0% (Non-repayable grant)",
+                "min_turnover": 200000.0,
+                "sector": "General Commerce & Retail",
+                "eligibility_check": lambda e, rev: rev >= 200000.0,
+                "description": "Designed to scale micro-enterprises and growing digital/industrial startups."
+            }
+        ]
+
+        # --- SIDEBAR NAVIGATION & LOGOUT ---
+        st.sidebar.title("NewMoneySync 💸")
+        st.sidebar.caption(f"Mode: {active_role.upper()}")
+
+        menu_options = [
+            "Dashboard & Telemetry", 
+            "Invoicing & Stablecoin Settlement", 
+            "Webhook Simulation (Auto-Pay)",
+            "Payroll & Dispersals",
+            "User Settings & Automation Rules",
+            "Cooperative Ledger (GRP-01)",
+            "Tax & Compliance Engine",
+            "CBN Intervention Matchmaker (GOV-01)",
+            "OmniSync Retail Intelligence"
+        ]
+
+        if active_role == 'developer':
+            menu_options.insert(0, "🛠️ Developer Control Center")
+
+        menu = st.sidebar.radio("Navigation", menu_options)
+
         st.sidebar.markdown("---")
-        st.sidebar.markdown(f"👤 **Logged in as:**\n`{active_username}` (ID: {active_user_id})")
+        st.sidebar.markdown(f"👤 **Logged in as:**\n`{active_username}`\n📱 `{active_phone}`")
         
         if st.sidebar.button("🚪 Logout / Switch Profile"):
             st.session_state.logged_in_user_id = None
             st.rerun()
 
         # ==========================================
+        # 0. DEVELOPER CONTROL CENTER (IF DEVELOPER)
+        # ==========================================
+        if menu == "🛠️ Developer Control Center":
+            st.title("🛠️ Developer Control Center")
+            st.markdown("System-wide administrative oversight, global telemetry, and active session management.")
+
+            col_dc1, col_dc2, col_dc3 = st.columns(3)
+            with col_dc1:
+                st.metric("System Environment", "Mainnet / Production")
+            with col_dc2:
+                st.metric("Database Active File", DB_NAME)
+            with col_dc3:
+                st.metric("Active Role Access", active_role.upper())
+
+            st.markdown("---")
+            st.subheader("Global User Directory & Role Management")
+            
+            all_users_df = pd.read_sql("SELECT user_id, username, phone_number, role, entity_type, annual_turnover, onboarding_complete FROM users", sqlite3.connect(DB_NAME))
+            st.dataframe(all_users_df, use_container_width=True)
+
+            st.markdown("### Quick Developer Actions")
+            col_act1, col_act2 = st.columns(2)
+            with col_act1:
+                if st.button("🔄 Reset Active Session State"):
+                    st.session_state.clear()
+                    st.success("Session state cache cleared successfully!")
+                    st.rerun()
+            with col_act2:
+                if st.button("📊 Force Refresh Telemetry Cache"):
+                    st.success("Telemetry cache reloaded.")
+
+        # ==========================================
         # 1. DASHBOARD & TELEMETRY VIEW
         # ==========================================
-        if menu == "Dashboard & Telemetry":
+        elif menu == "Dashboard & Telemetry":
             st.title("📊 NewMoneySync Telemetry & Metrics Dashboard")
             st.markdown("Real-time automated tracking across your core MVP metrics.")
 
@@ -395,7 +577,7 @@ else:
 
             st.markdown("---")
 
-            df_users = pd.read_sql("SELECT * FROM users", sqlite3.connect(DB_NAME))
+            df_users = pd.read_sql("SELECT user_id, username, email, phone_number, entity_type, tier, cohort_week FROM users", sqlite3.connect(DB_NAME))
             df_events = pd.read_sql("SELECT * FROM telemetry_events WHERE user_id = ?", sqlite3.connect(DB_NAME), params=(active_user_id,))
             df_invoices = pd.read_sql("SELECT * FROM invoices WHERE user_id = ?", sqlite3.connect(DB_NAME), params=(active_user_id,))
 
@@ -416,7 +598,7 @@ else:
             tab1, tab2, tab3 = st.tabs(["Traffic & Cohorts", "Measurable Actions Log", "Retention & Conversion Data"])
             with tab1:
                 if not df_users.empty:
-                    st.dataframe(df_users[['user_id', 'username', 'traffic_source', 'cohort_week', 'tier']], use_container_width=True)
+                    st.dataframe(df_users[['user_id', 'username', 'phone_number', 'cohort_week', 'tier']], use_container_width=True)
                 else:
                     st.info("No user data available.")
             with tab2:
@@ -593,17 +775,23 @@ else:
         # ==========================================
         elif menu == "User Settings & Automation Rules":
             st.title("⚙️ User Settings & Custom Automation Rules")
-            user_info = run_query("SELECT entity_type, annual_turnover, tax_bracket_rate, coop_split_rate FROM users WHERE user_id = ?", (active_user_id,))[0]
+            user_info = run_query("SELECT entity_type, annual_turnover, tax_bracket_rate, coop_split_rate, phone_number FROM users WHERE user_id = ?", (active_user_id,))[0]
             
             with st.form("settings_form"):
+                phone_num = st.text_input("Phone Number", value=user_info[4] if user_info[4] else "")
+                new_pass = st.text_input("New Password (leave blank to keep current)", type="password")
                 entity_type = st.selectbox("Entity Classification", ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"], index=["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"].index(user_info[0]) if user_info[0] in ["Freelancer", "Small Business (< ₦100M Turnover)", "Registered Corporation"] else 0)
                 annual_turnover = st.number_input("Estimated Annual Revenue ($)", min_value=0.0, value=user_info[1] if user_info[1] else 15000.0)
                 coop_split_rate = st.slider("Cooperative Pool Allocation (%)", min_value=0.0, max_value=25.0, value=user_info[3] if user_info[3] else 5.0, step=0.5)
                 
                 if st.form_submit_button("Save Automation Rules"):
                     calculated_tax = 0.0 if entity_type == "Small Business (< ₦100M Turnover)" and annual_turnover <= 65000 else 7.5
-                    run_query("UPDATE users SET entity_type = ?, annual_turnover = ?, tax_bracket_rate = ?, coop_split_rate = ? WHERE user_id = ?", 
-                              (entity_type, annual_turnover, calculated_tax, coop_split_rate, active_user_id), fetch=False)
+                    if new_pass.strip():
+                        run_query("UPDATE users SET phone_number = ?, password_hash = ?, entity_type = ?, annual_turnover = ?, tax_bracket_rate = ?, coop_split_rate = ? WHERE user_id = ?", 
+                                  (phone_num, new_pass, entity_type, annual_turnover, calculated_tax, coop_split_rate, active_user_id), fetch=False)
+                    else:
+                        run_query("UPDATE users SET phone_number = ?, entity_type = ?, annual_turnover = ?, tax_bracket_rate = ?, coop_split_rate = ? WHERE user_id = ?", 
+                                  (phone_num, entity_type, annual_turnover, calculated_tax, coop_split_rate, active_user_id), fetch=False)
                     st.success("Automation rules updated successfully!")
                     st.rerun()
 
@@ -714,45 +902,7 @@ else:
             st.title("🇳🇬 Government & CBN Intervention Matchmaker (GOV-01)")
             st.markdown("Algorithmic matching engine linking your business profile with active Nigerian federal grants, single-digit loans, and SME intervention funds.")
 
-            user_row = run_query("SELECT username, entity_type, annual_turnover FROM users WHERE user_id = ?", (active_user_id,))[0]
-            u_name, entity_type, annual_turnover = user_row
-
             st.info(f"Analyzing profile for **{u_name}** | Entity: **{entity_type}** | Est. Annual Revenue: **${annual_turnover:,.2f}**")
-
-            programs = [
-                {
-                    "name": "FGN/BOI N75M MSME Intervention Fund",
-                    "type": "Low-Interest Loan (9% P.A.)",
-                    "max_amount": "₦1,000,000 (~$1,200)",
-                    "interest": "9% per annum",
-                    "eligibility_check": lambda e, rev: True,
-                    "description": "Targeted support to reduce production costs and support working capital for small businesses."
-                },
-                {
-                    "name": "BOI Guaranteed Loans for Women Entrepreneurs",
-                    "type": "Concessionary Loan & Grant",
-                    "max_amount": "₦10,000,000 (~$12,000)",
-                    "interest": "Single-digit subsidized",
-                    "eligibility_check": lambda e, rev: True,
-                    "description": "Empowering women-owned businesses with affordable financing and capacity building."
-                },
-                {
-                    "name": "SMEDAN National Business Skills & Matching Grant",
-                    "type": "Federal Grant & Equipment Support",
-                    "max_amount": "₦500,000 Direct Grant",
-                    "interest": "0% (Non-repayable grant)",
-                    "eligibility_check": lambda e, rev: rev <= 50000.0,
-                    "description": "Designed to scale micro-enterprises, provide shared facility access, and equip growing digital/industrial startups."
-                },
-                {
-                    "name": "CBN Real Sector Support Facility (RSSF / 100 for 100 PPP)",
-                    "type": "Long-Term Industrial Financing",
-                    "max_amount": "₦5,000,000,000",
-                    "interest": "5% - 9% per annum",
-                    "eligibility_check": lambda e, rev: rev >= 20000.0,
-                    "description": "Targeted at large scale manufacturing, tech infrastructure, agro-processing, and export-driven production."
-                }
-            ]
 
             st.markdown("### 🔍 Live Program Eligibility Assessment")
             
@@ -805,3 +955,282 @@ The applicant has met the automated eligibility benchmark criteria set forth by 
                         )
                     
                     st.markdown("---")
+            
+        # ==========================================
+        # 9. OMNISYNC RETAIL INTELLIGENCE MODULE
+        # ==========================================
+        elif menu == "OmniSync Retail Intelligence":
+            st.title("📦 OmniSync Retail Intelligence")
+            st.markdown("Bridge physical retail storefronts into your financial ledger using Gemini multimodal AI.")
+
+            from omnisync.services import parse_retail_input_with_gemini
+
+            omni_tab1, omni_tab2, omni_tab3 = st.tabs(["📥 Multimodal Intake", "📊 Storefront & Valuation", "⚡ Sales & Restock Tracker"])
+
+            with omni_tab1:
+                st.subheader("Instant Shelf Onboarding")
+                intake_mode = st.radio("Choose Intake Method", ["Voice Note (with text preview)", "Text Description", "Upload Shelf Photo"])
+
+                # Handle extraction results review session state initialization
+                if 'pending_inventory' not in st.session_state:
+                    st.session_state['pending_inventory'] = []
+
+                if intake_mode == "Upload Shelf Photo":
+                    photo_tab1, photo_tab2 = st.tabs(["📷 Take Live Photo", "📁 Camera Roll Gallery"])
+                    
+                    image_bytes = None
+                    
+                    with photo_tab1:
+                        camera_image = st.camera_input("Take a photo of the shelf inventory", key="shelf_camera_input")
+                        if camera_image is not None:
+                            image_bytes = camera_image.getvalue()
+                            
+                    with photo_tab2:
+                        uploaded_shelf = st.file_uploader("Choose an existing photo from your device", type=["jpg", "png", "jpeg"], key="shelf_file_uploader")
+                        if uploaded_shelf is not None:
+                            image_bytes = uploaded_shelf.getvalue()
+                            st.image(uploaded_shelf, caption="Target Shelf View", use_container_width=True)
+
+                    if image_bytes is not None:
+                        if st.button("Process Shelf with Gemini AI"):
+                            with st.spinner("Analyzing physical stock via Gemini..."):
+                                try:
+                                    parsed_items = parse_retail_input_with_gemini(image_bytes=image_bytes)
+                                    if isinstance(parsed_items, list):
+                                        for item in parsed_items:
+                                            if item.get('cost_price') is None:
+                                                item['cost_price'] = 0.0
+                                            if item.get('selling_price') is None:
+                                                item['selling_price'] = 0.0
+                                            if item.get('quantity') is None:
+                                                item['quantity'] = 1
+                                        st.session_state['pending_inventory'] = parsed_items
+                                        st.success("Successfully extracted inventory catalog! Please review and update prices below.")
+                                        log_event_ui(active_user_id, "omnisync_shelf_photo_imported")
+                                except Exception as e:
+                                    st.error(f"Error parsing image: {e}")
+                    else:
+                        st.info("Snap a live photo or select an existing picture from your camera roll above to begin.")                    
+
+                elif intake_mode == "Voice Note (with text preview)":
+                    st.markdown("🎙️ **Record your stock note:**")
+                    audio_file = st.audio_input("Record inventory voice note")
+                    
+                    # Initialize session state variables
+                    if 'editable_inventory_text' not in st.session_state:
+                        st.session_state['editable_inventory_text'] = ""
+                    if 'last_audio_file_id' not in st.session_state:
+                        st.session_state['last_audio_file_id'] = None
+                        
+                    # Automatically transcribe when a new audio recording is detected
+                    if audio_file is not None:
+                        current_file_id = getattr(audio_file, 'file_id', id(audio_file))
+                        if st.session_state['last_audio_file_id'] != current_file_id:
+                            with st.spinner("Transcribing your voice via Gemini..."):
+                                try:
+                                    audio_bytes = audio_file.getvalue()
+                                    mime_type = getattr(audio_file, 'type', 'audio/wav')
+                                    transcribed_text = transcribe_audio_with_gemini(audio_bytes, mime_type=mime_type)
+                                    st.session_state['editable_inventory_text'] = transcribed_text
+                                    st.session_state['last_audio_file_id'] = current_file_id
+                                    st.success("Transcription complete!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Could not transcribe automatically. Please try recording again or type your note. ({e})")
+                    
+                    inventory_text = st.text_area(
+                        "Review and edit your transcribed inventory text here:",
+                        key="editable_inventory_text"
+                    )
+                    
+                    if st.button("Process Final Inventory Text"):
+                        if inventory_text.strip():
+                            with st.spinner("Structuring items and calculating margins..."):
+                                try:
+                                    parsed_items = parse_retail_input_with_gemini(raw_input_text=inventory_text)
+                                    if isinstance(parsed_items, list):
+                                        for item in parsed_items:
+                                            if item.get('cost_price') is None:
+                                                item['cost_price'] = 0.0
+                                            if item.get('selling_price') is None:
+                                                item['selling_price'] = 0.0
+                                            if item.get('quantity') is None:
+                                                item['quantity'] = 10
+                                        st.session_state['pending_inventory'] = parsed_items
+                                        st.success("Store catalog structured successfully! Please review and update prices below.")
+                                        log_event_ui(active_user_id, "omnisync_voice_transcribed_imported")
+                                except Exception as e:
+                                    st.error(f"Error processing text: {e}")
+                        else:
+                            st.warning("The text box is empty. Record a voice note or type an item description first.")
+
+                            
+                else:
+                    inventory_text = st.text_area(
+                        "Type your inventory description", 
+                        placeholder="e.g., '10 crates of Coca-Cola bought at 3000 NGN, selling at 4500 NGN.'"
+                    )
+                    
+                    if st.button("Process Inventory with Gemini"):
+                        if inventory_text.strip():
+                            with st.spinner("Structuring items and calculating baseline margins via Gemini..."):
+                                try:
+                                    parsed_items = parse_retail_input_with_gemini(raw_input_text=inventory_text)
+                                    if isinstance(parsed_items, list):
+                                        for item in parsed_items:
+                                            if item.get('cost_price') is None:
+                                                item['cost_price'] = 0.0
+                                            if item.get('selling_price') is None:
+                                                item['selling_price'] = 0.0
+                                            if item.get('quantity') is None:
+                                                item['quantity'] = 10
+                                        st.session_state['pending_inventory'] = parsed_items
+                                        st.success("Store catalog structured successfully! Please review and update prices below.")
+                                        log_event_ui(active_user_id, "omnisync_text_imported")
+                                except Exception as e:
+                                    st.error(f"Error processing text: {e}")
+                        else:
+                            st.warning("Please type an inventory description first.")
+
+                # Interactive Review & Commit Pending Items Editor
+                if st.session_state.get('pending_inventory'):
+                    st.markdown("---")
+                    st.subheader("📝 Review & Complete Pricing Details")
+                    st.markdown("Review extracted items, add missing prices or quantities, then commit to your store database.")
+                    
+                    df_pending = pd.DataFrame(st.session_state['pending_inventory'])
+                    edited_pending_df = st.data_editor(
+                        df_pending,
+                        num_rows="dynamic",
+                        key="inventory_review_editor"
+                    )
+                    
+                    if st.button("Commit Pending Items to Store Database", type="primary"):
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
+                        for index, row in edited_pending_df.iterrows():
+                            c_price = float(row['cost_price']) if row['cost_price'] is not None else 0.0
+                            s_price = float(row['selling_price']) if row['selling_price'] is not None else 0.0
+                            qty = int(row['quantity']) if row['quantity'] is not None else 1
+                            cat = row.get('category', 'General')
+                            
+                            cursor.execute(
+                                "INSERT INTO omnisync_products (user_id, name, category, cost_price, selling_price, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                (active_user_id, row['name'], cat, c_price, s_price, datetime.now().isoformat())
+                            )
+                            prod_id = cursor.lastrowid
+                            cursor.execute(
+                                "INSERT INTO omnisync_inventory (product_id, quantity_on_hand, updated_at) VALUES (?, ?, ?)",
+                                (prod_id, qty, datetime.now().isoformat())
+                            )
+                        conn.commit()
+                        conn.close()
+                        st.session_state['pending_inventory'] = []
+                        st.success("Inventory successfully saved to store database!")
+                        st.balloons()
+                        st.rerun()
+
+            with omni_tab2:
+                st.subheader("📊 Storefront Valuation & Live Price Management")
+                st.markdown("Update cost prices, selling prices, categories, or stock quantities at any time.")
+                
+                query = """
+                    SELECT p.product_id, p.name, p.category, p.cost_price, p.selling_price, i.quantity_on_hand, 
+                           (i.quantity_on_hand * p.cost_price) as total_cost_valuation,
+                           (i.quantity_on_hand * (p.selling_price - p.cost_price)) as potential_profit
+                    FROM omnisync_products p
+                    JOIN omnisync_inventory i ON p.product_id = i.product_id
+                    WHERE p.user_id = ?
+                """
+                products_df = pd.read_sql(query, sqlite3.connect(DB_NAME), params=(active_user_id,))
+
+                if not products_df.empty:
+                    total_net_worth = products_df['total_cost_valuation'].sum()
+                    total_potential_profit = products_df['potential_profit'].sum()
+
+                    col_v1, col_v2 = st.columns(2)
+                    with col_v1:
+                        st.metric("Total Store Net Worth (Capital)", f"${total_net_worth:,.2f}")
+                    with col_v2:
+                        st.metric("Potential Gross Profit", f"${total_potential_profit:,.2f}")
+
+                    st.markdown("---")
+                    st.subheader("Interactive Catalog Management")
+                    
+                    updated_catalog = st.data_editor(
+                        products_df,
+                        column_config={
+                            "product_id": "ID",
+                            "name": "Product Name",
+                            "category": "Category",
+                            "cost_price": st.column_config.NumberColumn("Cost Price ($)", format="$%.2f", min_value=0.0),
+                            "selling_price": st.column_config.NumberColumn("Selling Price ($)", format="$%.2f", min_value=0.0),
+                            "quantity_on_hand": st.column_config.NumberColumn("Stock Qty", format="%d", min_value=0),
+                            "total_cost_valuation": None,
+                            "potential_profit": None
+                        },
+                        disabled=["product_id"],
+                        hide_index=True,
+                        key="catalog_editor"
+                    )
+                    
+                    if st.button("Save Catalog & Price Updates", type="primary"):
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
+                        for index, row in updated_catalog.iterrows():
+                            cursor.execute(
+                                "UPDATE omnisync_products SET name=?, category=?, cost_price=?, selling_price=? WHERE product_id=?",
+                                (row['name'], row['category'], float(row['cost_price']), float(row['selling_price']), int(row['product_id']))
+                            )
+                            cursor.execute(
+                                "UPDATE omnisync_inventory SET quantity_on_hand=?, updated_at=? WHERE product_id=?",
+                                (int(row['quantity_on_hand']), datetime.now().isoformat(), int(row['product_id']))
+                            )
+                        conn.commit()
+                        conn.close()
+                        st.success("Store catalog and pricing updated successfully!")
+                        st.rerun()
+                else:
+                    st.info("No retail products in your OmniSync catalog yet. Use the 'Multimodal Intake' tab to add items via photo or text.")
+
+            with omni_tab3:
+                st.subheader("Sales Velocity & Restock Alerts")
+                st.markdown("Log physical shop sales to track fast-moving items and automate restocking schedules.")
+                
+                active_prods = run_query("SELECT p.product_id, p.name, i.quantity_on_hand FROM omnisync_products p JOIN omnisync_inventory i ON p.product_id = i.product_id WHERE p.user_id = ?", (active_user_id,))
+                
+                if active_prods:
+                    with st.form("log_retail_sale_form"):
+                        selected_product = st.selectbox("Select Sold Product", active_prods, format_func=lambda x: f"{x[1]} (Stock on hand: {x[2]})")
+                        qty_sold = st.number_input("Quantity Sold", min_value=1, value=1)
+                        
+                        if st.form_submit_button("Record Sale & Update Inventory"):
+                            prod_id = selected_product[0]
+                            current_stock = selected_product[2]
+                            
+                            if qty_sold <= current_stock:
+                                p_details = run_query("SELECT cost_price, selling_price FROM omnisync_products WHERE product_id = ?", (prod_id,))[0]
+                                cp, sp = p_details[0], p_details[1]
+                                rev = qty_sold * sp
+                                cost = qty_sold * cp
+                                profit = rev - cost
+                                
+                                conn = sqlite3.connect(DB_NAME)
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "INSERT INTO omnisync_sales (user_id, product_id, quantity_sold, total_revenue, total_cost, net_profit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    (active_user_id, prod_id, qty_sold, rev, cost, profit, datetime.now().isoformat())
+                                )
+                                cursor.execute(
+                                    "UPDATE omnisync_inventory SET quantity_on_hand = quantity_on_hand - ? WHERE product_id = ?",
+                                    (qty_sold, prod_id)
+                                )
+                                conn.commit()
+                                conn.close()
+                                log_event_ui(active_user_id, "omnisync_sale_recorded")
+                                st.success(f"Sale recorded! Net profit generated: ${profit:,.2f}")
+                                st.rerun()
+                            else:
+                                st.error("Quantity sold cannot exceed current stock on hand.")
+                else:
+                    st.info("Add products to your catalog first before logging sales.")

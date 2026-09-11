@@ -1,1 +1,6 @@
 newmoneysync.db
+venv/
+.env
+*.db
+create_dev.py
+__pycache__/

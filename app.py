@@ -223,7 +223,7 @@ st.markdown("""
         border-right: 1px solid rgba(255, 255, 255, 0.4);
     }
     
-    [data-testid="stSidebar"] *, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] div {
+    [data-testid="stSidebar"] *, [data-testid="stSidebar"] span, [data-testid="stSidebar"] label, [data-testid="stSidebar"] div, [data-testid="stSidebar"] p {
         color: #0F172A !important;
         font-weight: 600;
     }
@@ -231,6 +231,13 @@ st.markdown("""
     [data-testid="stSidebar"] .stRadio label p {
         color: #0F172A !important;
         font-weight: 700;
+    }
+
+    /* Override dark container backgrounds that swallow text inside sidebar profile blocks */
+    [data-testid="stSidebar"] div[data-testid="stVerticalBlock"] > div {
+        background: rgba(255, 255, 255, 0.3) !important;
+        border-radius: 8px;
+        padding: 4px 8px;
     }
 
     div[data-testid="stMetric"] {
@@ -292,7 +299,7 @@ st.markdown("""
         font-weight: 700 !important;
     }
 </style>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True) 
 
 # --- DATABASE UTILITIES ---
 def run_query(query, params=(), fetch=True):

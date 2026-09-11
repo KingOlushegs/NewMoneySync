@@ -277,6 +277,20 @@ st.markdown("""
     hr {
         border-color: rgba(255, 255, 255, 0.6);
     }
+
+    /* Fix dark background blocks on inputs and form fields */
+    .stTextInput input, .stSelectbox select, .stNumberInput input, div[data-baseweb="select"] > div {
+        background-color: rgba(255, 255, 255, 0.9) !important;
+        color: #0F172A !important;
+        -webkit-text-fill-color: #0F172A !important;
+        border-radius: 8px !important;
+    }
+    
+    /* Ensure label text above inputs is clearly legible */
+    label, .stTextInput label, .stSelectbox label, .stNumberInput label {
+        color: #0F172A !important;
+        font-weight: 700 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 

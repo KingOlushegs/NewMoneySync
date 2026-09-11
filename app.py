@@ -541,52 +541,52 @@ else:
             st.rerun()
 
         # ==========================================
-# 0. DEVELOPER CONTROL CENTER (IF DEVELOPER)
-# ==========================================
-if menu == "🛠️ Developer Control Center":
-    st.title("🛠️ Developer Control Center")
-    st.markdown("System-wide administrative oversight, global telemetry, and active session management.")
+        # 0. DEVELOPER CONTROL CENTER (IF DEVELOPER)
+        # ==========================================
+        if menu == "🛠️ Developer Control Center":
+            st.title("🛠️ Developer Control Center")
+            st.markdown("System-wide administrative oversight, global telemetry, and active session management.")
 
-    col_dc1, col_dc2, col_dc3 = st.columns(3)
-    with col_dc1:
-        st.metric("System Environment", "Mainnet / Production")
-    with col_dc2:
-        st.metric("Database Active File", DB_NAME)
-    with col_dc3:
-        st.metric("Active Role Access", active_role.upper())
+            col_dc1, col_dc2, col_dc3 = st.columns(3)
+            with col_dc1:
+                st.metric("System Environment", "Mainnet / Production")
+            with col_dc2:
+                st.metric("Database Active File", DB_NAME)
+            with col_dc3:
+                st.metric("Active Role Access", active_role.upper())
 
-    st.markdown("---")
-    st.subheader("Global User Directory & Role Management")
-    
-    all_users_df = pd.read_sql("SELECT user_id, username, phone_number, role, entity_type, annual_turnover, onboarding_complete FROM users", sqlite3.connect(DB_NAME))
-    st.dataframe(all_users_df, use_container_width=True)
+            st.markdown("---")
+            st.subheader("Global User Directory & Role Management")
+            
+            all_users_df = pd.read_sql("SELECT user_id, username, phone_number, role, entity_type, annual_turnover, onboarding_complete FROM users", sqlite3.connect(DB_NAME))
+            st.dataframe(all_users_df, use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("Live User Retail & Inventory Activity")
-    try:
-        live_products_df = pd.read_sql("""
-            SELECT p.product_id, p.user_id, u.username, u.phone_number, p.name, p.category, p.cost_price, p.selling_price, i.quantity_on_hand, p.created_at
-            FROM omnisync_products p
-            LEFT JOIN users u ON p.user_id = u.user_id
-            LEFT JOIN omnisync_inventory i ON p.product_id = i.product_id
-        """, sqlite3.connect(DB_NAME))
-        if not live_products_df.empty:
-            st.dataframe(live_products_df, use_container_width=True)
-        else:
-            st.info("No retail products logged by users yet.")
-    except Exception as e:
-        st.info("Awaiting first user retail inputs...")
+            st.markdown("---")
+            st.subheader("Live User Retail & Inventory Activity")
+            try:
+                live_products_df = pd.read_sql("""
+                    SELECT p.product_id, p.user_id, u.username, u.phone_number, p.name, p.category, p.cost_price, p.selling_price, i.quantity_on_hand, p.created_at
+                    FROM omnisync_products p
+                    LEFT JOIN users u ON p.user_id = u.user_id
+                    LEFT JOIN omnisync_inventory i ON p.product_id = i.product_id
+                """, sqlite3.connect(DB_NAME))
+                if not live_products_df.empty:
+                    st.dataframe(live_products_df, use_container_width=True)
+                else:
+                    st.info("No retail products logged by users yet.")
+            except Exception as e:
+                st.info("Awaiting first user retail inputs...")
 
-    st.markdown("### Quick Developer Actions")
-    col_act1, col_act2 = st.columns(2)
-    with col_act1:
-        if st.button("🔄 Reset Active Session State"):
-            st.session_state.clear()
-            st.success("Session state cache cleared successfully!")
-            st.rerun()
-    with col_act2:
-        if st.button("📊 Force Refresh Telemetry Cache"):
-            st.success("Telemetry cache reloaded.")
+            st.markdown("### Quick Developer Actions")
+            col_act1, col_act2 = st.columns(2)
+            with col_act1:
+                if st.button("🔄 Reset Active Session State"):
+                    st.session_state.clear()
+                    st.success("Session state cache cleared successfully!")
+                    st.rerun()
+            with col_act2:
+                if st.button("📊 Force Refresh Telemetry Cache"):
+                    st.success("Telemetry cache reloaded.")
 
         # ==========================================
         # 1. DASHBOARD & TELEMETRY VIEW
